@@ -1,0 +1,87 @@
+guddu@g-IdeaPad-Slim-3-14IAH8:~$ docker run -d --name redis-stack -p 6379:6379 -p 8001:8001 redis/redis-stack:latest
+Unable to find image 'redis/redis-stack:latest' locally
+latest: Pulling from redis/redis-stack
+6acd66da55e4: Pull complete 
+2c0937dd2c62: Pull complete 
+59fbe10511c3: Pull complete 
+44190ad1f55f: Pull complete 
+af6eca94c810: Pull complete 
+4d8c94c7ecbd: Pull complete 
+c2e320d41856: Pull complete 
+8259dfe192da: Pull complete 
+4f4fb700ef54: Pull complete 
+53acfac450a4: Pull complete 
+e02e663fe7b5: Pull complete 
+a2d56dac7fbe: Pull complete 
+5aeac081ab04: Pull complete 
+273bca046af3: Pull complete 
+ef746faa6c83: Pull complete 
+6f586d774aa5: Pull complete 
+Digest: sha256:5d5154123426693540ea6c1d9e638eae2bf2024879c839db6fcfdd7717e817c7
+Status: Downloaded newer image for redis/redis-stack:latest
+b23c3b70940a5159c1876495694beee117646981d1e859fd0594336efa1bb6b8
+guddu@g-IdeaPad-Slim-3-14IAH8:~$ docker ps
+CONTAINER ID   IMAGE                      COMMAND            CREATED              STATUS              PORTS                                                                                      NAMES
+b23c3b70940a   redis/redis-stack:latest   "/entrypoint.sh"   About a minute ago   Up About a minute   0.0.0.0:6379->6379/tcp, [::]:6379->6379/tcp, 0.0.0.0:8001->8001/tcp, [::]:8001->8001/tcp   redis-stack
+guddu@g-IdeaPad-Slim-3-14IAH8:~$ docker exec -it b23c3b70940a
+docker: 'docker exec' requires at least 2 arguments
+
+Usage:  docker exec [OPTIONS] CONTAINER COMMAND [ARG...]
+
+See 'docker exec --help' for more information
+guddu@g-IdeaPad-Slim-3-14IAH8:~$ docker exec -it b23c3b70940a bash
+root@b23c3b70940a:/# redis cli ping
+bash: redis: command not found
+root@b23c3b70940a:/# redis-cli ping
+PONG
+root@b23c3b70940a:/# redis-cli
+127.0.0.1:6379> ping
+PONG
+127.0.0.1:6379> set name pradip
+OK
+127.0.0.1:6379> grt name
+(error) ERR unknown command 'grt', with args beginning with: 'name' 
+127.0.0.1:6379> get name
+"pradip"
+127.0.0.1:6379> get name
+"pradip maity"
+127.0.0.1:6379> set user:1  pradip
+OK
+127.0.0.1:6379> set user:1  jane
+OK
+127.0.0.1:6379> set user:2 mana
+OK
+127.0.0.1:6379> set user:3 nana
+OK
+127.0.0.1:6379> set msg:1 hey
+OK
+127.0.0.1:6379> set msg:2 hello
+OK
+127.0.0.1:6379> set msg:3 how_are_you nx
+OK
+127.0.0.1:6379> set msg:3 something_else nx
+(nil)
+127.0.0.1:6379> set user:2 kalua nx
+(nil)
+127.0.0.1:6379> set user:2 kalua 
+OK
+127.0.0.1:6379> mget user:1 user:2 msg:2
+1) "jane"
+2) "kalua"
+3) "hello"
+127.0.0.1:6379> get user:1
+"jane"
+127.0.0.1:6379> set count 0
+OK
+127.0.0.1:6379> incr count
+(integer) 1
+127.0.0.1:6379> incr count
+(integer) 2
+127.0.0.1:6379> incrby count 10
+(integer) 12
+127.0.0.1:6379> get msg:6
+"Hey I am from node js"
+127.0.0.1:6379> exit
+root@b23c3b70940a:/# exit
+exit
+guddu@g-IdeaPad-Slim-3-14IAH8:~$ 
