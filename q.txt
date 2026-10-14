@@ -1,0 +1,406 @@
+# Redis Notes: Zero to Hero
+
+> A focused guide for this learning folder. Read the sections in order and run the commands in a Redis CLI. It is intentionally compact enough for about 1.5 hours.
+
+## 1. What Redis Is
+
+Redis is an in-memory data-structure server. A client sends commands to a Redis server, and Redis stores data under **keys**. It is commonly used for:
+
+- caching API/database results;
+- counters, sessions, rate limits, and feature flags;
+- queues and background jobs;
+- leaderboards and rankings;
+- event processing with Streams;
+- publish/subscribe messaging.
+
+Redis is fast because data is kept in memory and most commands are atomic and very small. It is not automatically a permanent database: configure persistence and backups when the data matters.
+
+### The mental model
+
+```text
+key -> one Redis value of one type
+
+user:1       -> string
+user:1:info  -> hash
+orders:queue -> list
+online:users -> set
+scores       -> sorted set
+events       -> stream
+```
+
+Keys are just strings. A colon convention (`user:1`, `cache:todos`) creates readable namespaces; it does not create folders.
+
+## 2. Start Redis Locally
+
+This folder uses Redis Stack in Docker. Redis Stack also includes tools/modules such as RedisInsight and RedisJSON, but the core commands below work with Redis Open Source too.
+
+```bash
+docker run -d --name redis-stack \
+	-p 6379:6379 -p 8001:8001 \
+	redis/redis-stack:latest
+
+docker ps
+docker exec -it redis-stack redis-cli
+```
+
+Useful connection checks:
+
+```redis
+PING                         # PONG means the server is reachable
+INFO server                  # server details
+DBSIZE                       # number of keys in the selected database
+SELECT 0                     # use logical database 0
+FLUSHDB                      # delete every key in this database; use carefully
+```
+
+Redis CLI uses `127.0.0.1:6379` by default. RedisInsight is available at `http://localhost:8001` for visual inspection.
+
+## 3. Core Rules and Key Commands
+
+```redis
+SET name Pradip
+GET name
+EXISTS name
+TYPE name
+DEL name
+RENAME name display_name
+```
+
+Important behavior:
+
+- A missing `GET` returns `(nil)`, not an error.
+- `SET` overwrites the existing value, even if its old type was different.
+- One key can hold only one Redis type. Using a list command on a string produces `WRONGTYPE`.
+- Aggregate values (lists, sets, hashes, sorted sets) are created on first insert and the key disappears when the aggregate becomes empty.
+- `KEYS *` is convenient for learning but can block a busy production server. Use `SCAN` instead:
+
+```redis
+SCAN 0 MATCH user:* COUNT 100
+```
+
+Repeat with the returned cursor until it becomes `0`. Matches are not guaranteed to be returned in one call and may repeat, so production code should handle both facts.
+
+### Expiration and TTL
+
+Expiration is useful for cache entries and sessions:
+
+```redis
+SET session:42 abc EX 3600       # set value and expiry atomically
+SET lock:job-1 token NX EX 30    # create only if absent, expire in 30s
+TTL session:42                   # seconds remaining
+PTTL session:42                  # milliseconds remaining
+EXPIRE session:42 60
+PERSIST session:42               # remove the expiry
+```
+
+`TTL` returns `-1` when the key exists without expiry and `-2` when the key does not exist. `SET` normally clears an old TTL; use `KEEPTTL` when you explicitly want to preserve it. `INCR`, `HSET`, and list pushes modify a value without replacing the key, so they keep the key TTL.
+
+## 4. Strings: Values, JSON, and Counters
+
+Strings are the simplest type. Values can be text, numbers, serialized JSON, or binary data.
+
+```redis
+SET greeting "Hello Redis"
+GET greeting
+MSET user:1 Jane user:2 Mana
+MGET user:1 user:2 missing:key
+
+SET count 0
+INCR count
+INCRBY count 10
+DECRBY count 2
+GET count
+```
+
+Counters are atomic: concurrent clients do not need to read, add, and write manually. The value must be a valid integer for integer operations.
+
+For JSON in core Redis, serialize it yourself:
+
+```redis
+SET user:1 '{"name":"Jane","role":"admin"}'
+GET user:1
+```
+
+Redis Stack's RedisJSON module can update/query JSON fields without replacing the whole document, but that is an optional module rather than a core string operation.
+
+Useful string commands: `APPEND`, `STRLEN`, `GETRANGE`, `GETSET`, `SETNX` (older form of `SET ... NX`), and `INCRBYFLOAT`.
+
+## 5. Lists: Queues, Stacks, and Recent Items
+
+A list is an ordered sequence of strings. `L` means left/head and `R` means right/tail.
+
+```redis
+DEL messages
+RPUSH messages first second third
+LRANGE messages 0 -1
+LLEN messages
+LPOP messages                  # remove from the left
+RPOP messages                  # remove from the right
+```
+
+Patterns:
+
+```redis
+# Stack: last in, first out
+LPUSH stack a b c
+LPOP stack                     # c
+
+# Queue: first in, first out
+LPUSH jobs job-1 job-2
+RPOP jobs                      # job-1
+
+# Worker waits instead of polling an empty queue
+BRPOP jobs 30                  # wait up to 30 seconds; 0 means forever
+```
+
+`LRANGE key 0 -1` reads the complete list. Use `LTRIM` to keep a capped list of recent items:
+
+```redis
+LPUSH recent user:3 user:2 user:1
+LTRIM recent 0 9               # keep only the first 10 items
+```
+
+For safer job hand-off, use `LMOVE`/`BLMOVE` to atomically move an item from a pending list to a processing list. For durable event history and consumer tracking, Redis Streams are usually a better fit.
+
+## 6. Sets: Unique Membership
+
+A set is an unordered collection of unique strings. It is ideal when order does not matter.
+
+```redis
+SADD users:online user:1 user:2 user:1
+SMEMBERS users:online           # order is not guaranteed
+SISMEMBER users:online user:1
+SCARD users:online
+SREM users:online user:2
+```
+
+Set algebra is useful for relationships:
+
+```redis
+SADD team:red a b c
+SADD team:blue b c d
+SINTER team:red team:blue      # common members: b, c
+SUNION team:red team:blue      # all members
+SDIFF team:red team:blue       # red but not blue: a
+```
+
+`SPOP` removes a random member; `SRANDMEMBER` reads a random member without removing it. Use `SSCAN` rather than `SMEMBERS` for a very large set.
+
+## 7. Hashes: Small Records and Object Fields
+
+A hash stores field-value pairs under one key. It is a natural representation for a user, product, session, or configuration record.
+
+```redis
+HSET user:1 name Jane email jane@example.com age 25
+HGET user:1 name
+HMGET user:1 name email
+HGETALL user:1
+HEXISTS user:1 email
+HDEL user:1 age
+```
+
+Hash fields are strings, so numeric values are returned as strings and can be incremented atomically:
+
+```redis
+HINCRBY user:1 login_count 1
+HINCRBY user:1 login_count 1
+```
+
+Use a hash when you usually read or update individual fields. Use a serialized string/RedisJSON when you need nested JSON queries. `HGETALL` is O(N) in the number of fields; avoid using it on an unexpectedly huge hash.
+
+Redis 7.4+ also supports field-level expiry (`HEXPIRE`, `HTTL`), but ordinary key-level `EXPIRE` is enough for most beginner cache/session work.
+
+## 8. Sorted Sets: Scores, Rankings, and Priority
+
+A sorted set contains unique members, each with a numeric score. Redis orders members by score, then lexicographically when scores tie.
+
+```redis
+ZADD leaderboard 100 alice 250 bob 180 carol
+ZRANGE leaderboard 0 -1 WITHSCORES        # low to high
+ZREVRANGE leaderboard 0 2 WITHSCORES      # top three
+ZRANK leaderboard alice                    # zero-based rank
+ZINCRBY leaderboard 25 alice
+ZSCORE leaderboard alice
+ZREM leaderboard carol
+```
+
+This supports leaderboards, priority queues, scheduled jobs, and sliding-window rate limits. `ZRANGEBYSCORE leaderboard 100 200` selects a score range. `ZPOPMIN` and `ZPOPMAX` remove the lowest/highest priority member.
+
+## 9. Streams: Append-Only Events
+
+A stream is a durable, ordered log. Unlike Pub/Sub, messages remain available for later readers.
+
+```redis
+XADD orders * user_id 42 item_id 9
+XADD orders * user_id 43 item_id 7
+XRANGE orders - +
+XLEN orders
+XREAD COUNT 10 STREAMS orders 0
+```
+
+`*` asks Redis to generate the event ID. For workers, use consumer groups:
+
+```redis
+XGROUP CREATE orders order-workers $ MKSTREAM
+XREADGROUP GROUP order-workers worker-1 COUNT 10 BLOCK 5000 \
+	STREAMS orders >
+XACK orders order-workers <message-id>
+```
+
+Use Streams for event history, retryable work, and multiple consumers. Use Lists for a simpler queue and Pub/Sub for transient live notifications.
+
+## 10. Pub/Sub: Live Notifications
+
+Pub/Sub sends a message to currently connected subscribers. It is fast but not durable: an offline subscriber misses the message.
+
+Terminal 1:
+
+```redis
+SUBSCRIBE notifications
+```
+
+Terminal 2:
+
+```redis
+PUBLISH notifications "build finished"
+```
+
+Use Pub/Sub for chat presence, UI refresh signals, or live notifications. Use Streams when delivery, replay, acknowledgement, or recovery matters.
+
+## 11. Geospatial Data
+
+Redis stores longitude/latitude members and can search by radius.
+
+```redis
+GEOADD stores 77.5946 12.9716 bengaluru
+GEOADD stores 72.8777 19.0760 mumbai
+GEOSEARCH stores FROMLONLAT 77.5946 12.9716 BYRADIUS 50 km WITHDIST
+GEOPOS stores bengaluru
+```
+
+Coordinates are longitude first, latitude second. Redis uses the sorted-set family internally; use geospatial commands rather than manipulating that representation yourself.
+
+## 12. Transactions, Atomicity, and Pipelining
+
+Many individual Redis commands are atomic. A transaction groups commands so Redis executes them sequentially without interleaving another client's commands:
+
+```redis
+MULTI
+INCR inventory
+DECR available
+EXEC
+```
+
+`WATCH key` provides optimistic locking: watch a key, read it, and run `MULTI ... EXEC`; if another client changes the key first, `EXEC` aborts. Transactions are not rollback systems: if a command fails during execution, earlier successful commands are not automatically undone.
+
+A pipeline sends several commands in one network round trip. It improves latency but is not automatically a transaction. Use a transaction for atomic grouping; use a pipeline for batching independent commands; combine them when both properties are needed.
+
+## 13. Node.js in This Folder
+
+This project uses `ioredis`:
+
+```js
+const Redis = require("ioredis");
+const client = new Redis(); // defaults to localhost:6379
+
+async function demo() {
+  await client.set("hello", "world", "EX", 60);
+  console.log(await client.get("hello"));
+  await client.quit();
+}
+
+demo().catch(console.error);
+```
+
+`client.js` creates one shared connection. Reusing a client is better than creating a new connection for every request. Always listen for connection errors in a real application:
+
+```js
+client.on("error", (error) => console.error("Redis error", error));
+```
+
+### Cache-aside pattern in `server.js`
+
+The current Express route follows this flow:
+
+1. `GET todos` from Redis.
+2. If present, parse and return the cached JSON.
+3. Otherwise fetch the API with Axios.
+4. Store the response and set a 30-second TTL.
+5. Return the fresh response.
+
+That is called **cache-aside** or **lazy caching**. The source API remains the source of truth; Redis reduces repeated latency and load. In production, add error handling so a Redis outage can fall back to the API, validate cached data, set the TTL in the same `SET` command (`SET todos value EX 30`), and avoid caching an error response.
+
+Run the example:
+
+```bash
+npm install
+node server.js
+curl http://localhost:3000/
+```
+
+`list.js` demonstrates `LPUSH`/`RPOP`, and `string.js` demonstrates `GET`/`EXPIRE`. Because Redis replies are asynchronous in Node.js, use `await` and catch rejected promises.
+
+> Note: Redis documentation currently recommends `node-redis` for new JavaScript projects, while this folder already uses `ioredis`. Learning either client is useful; the Redis command concepts stay the same.
+
+## 14. Persistence, Memory, and Production Basics
+
+- **RDB snapshots** save point-in-time dumps and are compact; a crash can lose changes since the last snapshot.
+- **AOF (Append Only File)** logs write operations and usually offers better durability at a storage/performance cost.
+- Configure `maxmemory` and an eviction policy for cache workloads. Do not assume Redis will always have unlimited RAM.
+- Never expose an unauthenticated Redis port to the public internet. Use authentication/ACLs, private networking, TLS where appropriate, and least privilege.
+- Monitor memory, hit rate, latency, rejected connections, evictions, and slow commands.
+- Use namespaces, TTLs, bounded lists/streams, and `SCAN` for operational tasks.
+- Redis is mostly single-threaded for command execution, so one very large `SMEMBERS`, `HGETALL`, or `KEYS` can hurt every client.
+
+## 15. Choosing the Right Type
+
+| Need                                 | Type       | First commands                |
+| ------------------------------------ | ---------- | ----------------------------- |
+| One value, JSON blob, counter, cache | String     | `SET`, `GET`, `INCR`          |
+| Ordered queue or stack               | List       | `LPUSH`, `RPOP`, `BRPOP`      |
+| Unique membership and set algebra    | Set        | `SADD`, `SISMEMBER`, `SINTER` |
+| Record fields                        | Hash       | `HSET`, `HGET`, `HINCRBY`     |
+| Ranking or priority by number        | Sorted set | `ZADD`, `ZRANGE`, `ZPOPMIN`   |
+| Replayable event log                 | Stream     | `XADD`, `XREADGROUP`, `XACK`  |
+| Live, non-durable notification       | Pub/Sub    | `PUBLISH`, `SUBSCRIBE`        |
+| Nearby locations                     | Geospatial | `GEOADD`, `GEOSEARCH`         |
+
+## 16. Practice Checklist
+
+Try these without looking back:
+
+1. Start Redis and prove it works with `PING`.
+2. Cache a value for 10 seconds using one `SET` command.
+3. Build a FIFO queue with `LPUSH` and `BRPOP`.
+4. Store a user in a hash and increment a field.
+5. Find common members of two sets.
+6. Build a three-user leaderboard and query the top two.
+7. Add and read one Stream event.
+8. Publish a Pub/Sub message from one CLI to another.
+9. Explain why `KEYS *` is risky in production.
+10. Explain when to choose a Stream instead of a List.
+
+## Quick Reference
+
+```text
+Inspect:   PING, INFO, DBSIZE, TYPE, EXISTS, SCAN
+Keys:      SET, GET, MGET, DEL, EXPIRE, TTL
+Numbers:   INCR, INCRBY, DECRBY
+Lists:     LPUSH, RPUSH, LRANGE, LPOP, RPOP, BRPOP, LTRIM
+Sets:      SADD, SMEMBERS, SISMEMBER, SINTER, SUNION, SDIFF
+Hashes:    HSET, HGET, HMGET, HGETALL, HINCRBY
+Sorted:    ZADD, ZRANGE, ZREVRANGE, ZRANK, ZINCRBY, ZPOPMIN
+Streams:   XADD, XRANGE, XREAD, XGROUP, XREADGROUP, XACK
+Pub/Sub:   PUBLISH, SUBSCRIBE
+Geo:       GEOADD, GEOSEARCH, GEOPOS
+Atomicity: MULTI, EXEC, WATCH
+```
+
+## Further Reading
+
+- [Redis data types](https://redis.io/docs/latest/develop/data-types/)
+- [Redis command reference](https://redis.io/docs/latest/commands/)
+- [Redis Lists](https://redis.io/docs/latest/develop/data-types/lists/)
+- [Redis Streams](https://redis.io/docs/latest/develop/data-types/streams/)
+- [Node.js clients](https://redis.io/docs/latest/develop/clients/nodejs/)
+- [ioredis documentation](https://github.com/redis/ioredis)
