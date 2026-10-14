@@ -1,4 +1,5 @@
-//for complete learning read the word fiile
+//for complete learning read the word fiile(https://docs.google.com/document/d/1dPJ5qbUB_y7nOkorWXF9uUwRt3ox06_u/edit?usp=sharing&ouid=100757758825633574707&rtpof=true&sd=true)
+
 
 # 🚀 Redis Short Notes — Quick Revision
 
